@@ -19,23 +19,39 @@ os.environ["https_proxy"] = "socks5://127.0.0.1:7897"
 load_dotenv()
 
 # 定义工具函数
-def book_meeting_room(会议室: str, 日期: str, 开始时间: str, 结束时间: str) -> str:
-    """预订会议室的工具函数"""
+def book_meeting_room(params: str) -> str:
+    """
+    预订会议室的工具函数
+    
+    Args:
+        params: 包含预订参数的字典
+            - 会议室: 会议室名称
+            - 日期: 预订日期，格式：YYYY-MM-DD
+            - 开始时间: 开始时间，格式：HH:MM
+            - 结束时间: 结束时间，格式：HH:MM
+    """
+    params = json.loads(params)
+    会议室 = params.get("会议室")
+    日期 = params.get("日期")
+    开始时间 = params.get("开始时间")
+    结束时间 = params.get("结束时间")
+    
     result = {
         "会议室": 会议室,
         "日期": 日期,
         "开始时间": 开始时间,
         "结束时间": 结束时间,
-        "状态": "已预订"
+        # "结果": "已预订"
     }
     return json.dumps(result, ensure_ascii=False)
 
-def query_meeting_room(日期: str, 时间段: str, 会议室列表: str) -> str:
+def query_meeting_room(params: str) -> str:
+    params = json.loads(params)
     """查询会议室状态的工具函数"""
     result = {
-        "日期": 日期,
-        "时间段": 时间段,
-        "会议室列表": 会议室列表,
+        "日期": params.get("日期")  ,
+        "时间段": params.get("时间段"),
+        "会议室列表": params.get("会议室列表"),
         "结果": [
             {"会议室": "宜山厅", "状态": "空闲"},
             {"会议室": "徐汇厅", "状态": "已预订"},
@@ -49,7 +65,7 @@ def create_llm():
     return ChatOpenAI(
         openai_api_key="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",
         openai_api_base="https://openrouter.ai/api/v1",
-        model_name="deepseek/deepseek-r1:free",
+        model_name="deepseek/deepseek-chat-v3-0324",
         temperature=0
     )
 
@@ -158,10 +174,10 @@ def process_request(user_input: str) -> Dict:
 # 测试代码
 if __name__ == "__main__":
     test_inputs = [
-        "我想预约今天下午三点到四点的宜山厅",
-        "帮我查询明天下午的会议室",
+        # "我想预约今天下午三点到四点的宜山厅",
+        # "帮我查询明天下午的会议室",
         "预订浦东厅周五上午9点到11点",
-        "查一下宜山厅和徐汇厅今天的空闲情况"
+        # "查一下宜山厅和徐汇厅今天的空闲情况"
     ]
     
     for test_input in test_inputs:
