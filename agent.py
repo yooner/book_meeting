@@ -87,6 +87,7 @@ async def get_room_availability_simple(date: Optional[str] = None, start_time: O
     Returns:
         会议室在指定时间段的可用性信息，简化格式
     """
+    print(f'==============={datetime.now().strftime("%Y-%m-%d %H:%M:%S")}')
     # 如果未指定日期，使用当前日期
     if date is None:
         date = datetime.now().strftime("%Y-%m-%d")
