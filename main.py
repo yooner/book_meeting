@@ -66,7 +66,7 @@ class LLMManager:
         """创建摘要LLM实例"""
         try:
             self.summary_llm = ChatOpenAI(
-                openai_api_key="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",
+                openai_api_key="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",
                 openai_api_base="https://openrouter.ai/api/v1",
                 model_name="deepseek/deepseek-chat-v3-0324:free",
                 temperature=0,
@@ -259,8 +259,14 @@ def generate_summary_message(messages):
     try:
         # 重新获取summary LLM，确保连接是活跃的
         summary_llm = llm_manager.get_summary_llm()
-        
-        # 提取对话中的关键信息进行总结
+
+        # 1. 手动将消息列表格式化为字符串
+        formatted_history = "\n".join([
+            f"{'User' if isinstance(m, HumanMessage) else 'Assistant' if isinstance(m, AIMessage) else 'System'}: {m.content}"
+            for m in messages
+        ])
+
+        # 2. 修改提示模板，使用普通字符串占位符
         summarization_prompt = ChatPromptTemplate.from_messages([
             ("system", """总结以下对话历史，提取关键信息：
 1. 已预订的会议室和时间
@@ -268,18 +274,31 @@ def generate_summary_message(messages):
 3. 常用的会议室和时间段
 4. 之前的会议预订情况
 请将总结控制在300字以内，只保留对未来对话有用的信息。
+
+对话历史如下：
+{formatted_history}
 """),
-            ("placeholder", "\n".join([f"{'用户' if isinstance(m, HumanMessage) else '助手'}: {m.content}" for m in messages])),
         ])
-        
+
         # 使用summary LLM进行总结
-        summary_result = summarization_prompt | summary_llm
-        summary_text = summary_result.invoke({})
-        
+        summary_chain = summarization_prompt | summary_llm
+
+        # 3. 调用 invoke 时传递格式化后的字符串
+        # 注意：键名需要匹配模板中的占位符 {formatted_history}
+        summary_response = summary_chain.invoke({"formatted_history": formatted_history})
+
+        # 假设返回的是 AIMessage 或类似对象
+        summary_text = summary_response.content if hasattr(summary_response, 'content') else str(summary_response)
+        # --- 结束修改 ---
+
         # 创建一个系统消息来保存总结
         return SystemMessage(content=f"历史对话总结：{summary_text}")
     except Exception as e:
+        # 打印更详细的错误信息，如果可能
+        import traceback
         print(f"生成总结失败: {str(e)}")
+        # traceback.print_exc() # 取消注释以获取完整堆栈跟踪
+
         # 创建一个简单的总结消息作为备选
         return SystemMessage(content="历史对话中包含了关于会议室预订的信息。")
 
@@ -486,8 +505,6 @@ def parse_and_print_json(message):
     """解析 AIMessage 中的 JSON 并打印结构化信息"""
     print("\n----- 提取的结构化信息 -----")
     print(message)
-    return {"input": "预定下周六宜山厅6点到八点用于测试"}
-    return message
     # 检查输入类型
     if hasattr(message, "content"):
         content = message.content
@@ -600,13 +617,24 @@ def create_agent_and_chains():
     chain_with_summarization = (
         RunnablePassthrough.assign(messages_summarized=summarize_messages)
         | RunnablePassthrough.assign(
-            structured_data=lambda x: standardization_chain.invoke({
+            input=lambda x: standardization_chain.invoke({
                 "input": x["input"],
                 "current_date": x["current_date"],
                 "chat_history": demo_ephemeral_chat_history.messages
             })
         )
         | chain_with_message_history
+    )
+
+    chain_with_summarization = (
+        RunnablePassthrough.assign(messages_summarized=summarize_messages)
+        | RunnablePassthrough.assign(
+            input=lambda x: standardization_chain.invoke({
+                "input": x["input"],
+                "current_date": x["current_date"],
+                "chat_history": demo_ephemeral_chat_history.messages
+            })
+        )
     )
     
     return chain_with_summarization
