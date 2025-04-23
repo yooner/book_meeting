@@ -106,15 +106,17 @@ chat_summary = llm_manager.get_summary_llm()
 demo_ephemeral_chat_history = ChatMessageHistory()
 
 def message_to_text(message):
-    """将消息对象转换为文本格式"""
+    """(还原后) 将消息对象转换为文本格式"""
     if isinstance(message, HumanMessage):
         return f"USER: {message.content}"
     elif isinstance(message, AIMessage):
+        # 直接使用 content，因为我们会在保存前确保它是干净的
         return f"ASSISTANT: {message.content}"
     elif isinstance(message, SystemMessage):
         return f"SYSTEM: {message.content}"
     else:
-        return f"OTHER: {message.content}"
+        # 优雅地处理其他可能的消息类型
+        return f"OTHER: {getattr(message, 'content', str(message))}"
 
 def text_to_message(text):
     """将文本格式转换回消息对象"""
@@ -502,46 +504,46 @@ tools = [book_meeting_room, query_meeting_room]
 
 # 定义一个解析和打印函数
 def parse_and_print_json(message):
-    """解析 AIMessage 中的 JSON 并打印结构化信息"""
-    print("\n----- 提取的结构化信息 -----")
-    print(message)
-    # 检查输入类型
+    """
+    (修改后) 打印来自标准化LLM的消息内容，
+    并提取 '操作：' 或 '预订：' 或 '查询：' 之后的语句作为返回值。
+    """
+    print("\n----- 标准化LLM输出 -----")
+    full_content = "" # Default value
+
     if hasattr(message, "content"):
-        content = message.content
-        print(f"原始消息内容: {content[:150]}..." if len(content) > 150 else content)
+        full_content = message.content
+        print(f"LLM 完整输出: {full_content}")
     else:
-        content = str(message)
-        print(f"非标准消息类型: {type(message)}")
+        # 处理意外的输入类型
+        full_content = str(message)
+        print(f"收到非标准消息类型，内容: {full_content}")
+
+    extracted_query = "" # Initialize extracted_query
+    match = re.search(r'[- ]*(操作|预订|查询)：\s*(.*)', full_content, re.DOTALL | re.MULTILINE)
+
+    if match:
+        extracted_query = match.group(2).strip()
+        print(f"提取到的查询语句: {extracted_query}")
+    else:
+        lines = full_content.split('\n')
+        non_think_lines = [line for line in lines if not line.strip().startswith('<think>') and not line.strip().endswith('</think>')]
+        if non_think_lines:
     
-    # 尝试解析 JSON
-    try:
-        import json
-        import re
-        
-        # 尝试找到 JSON 部分 - 处理可能的多余文本
-        json_match = re.search(r'({.*})', content)
-        json_str = json_match.group(1) if json_match else content
-        
-        # 解析 JSON
-        data = json.loads(json_str)
-        
-        # 打印解析后的结构化数据
-        print("\n解析后的结构化数据:")
-        print(f"- 意图 (Intent): {data.get('intent', '未提取')}")
-        print(f"- 会议室 (Room): {data.get('room_name', '未提取')}")
-        print(f"- 日期 (Date): {data.get('date', '未提取')}")
-        print(f"- 开始时间: {data.get('start_time', '未提取')}")
-        print(f"- 结束时间: {data.get('end_time', '未提取')}")
-        print(f"- 会议名称: {data.get('meeting_name', '未提取')}")
-        
-        # 返回解析后的字典，方便后续处理
-        return data
-    except Exception as e:
-        print(f"JSON 解析失败: {str(e)}")
-        print("无法解析为结构化数据")
-        return {"error": "解析失败", "raw_content": content}
-    finally:
-        print("--------------------------\n")
+             last_meaningful_line = non_think_lines[-1].strip()
+             if ':' in last_meaningful_line:
+                 extracted_query = last_meaningful_line.split(':')[-1].strip()
+             else:
+                 extracted_query = last_meaningful_line
+             print(f"未找到明确前缀，回退提取: {extracted_query}")
+        else:
+             # If all else fails, return the original content minus think blocks
+             extracted_query = "\n".join(non_think_lines).strip()
+             print(f"无法提取特定查询，返回处理后的内容: {extracted_query}")
+
+    print("--------------------------\n")
+    # 返回提取到的查询语句字符串
+    return extracted_query
 
 # 创建代理和链的函数，支持重新初始化
 def create_agent_and_chains():
@@ -585,13 +587,15 @@ def create_agent_and_chains():
         {chat_history}
 
         请将用户输入规范化为清晰的查询语句。不要添加未提及的信息，但可以基于历史对话补充缺失的关键信息。
+        记住缺少的内容可以从历史对话中总结
         输出格式示例：
-        - 查询：请查询[日期][时间段][会议室名称]的可用情况
-        - 预订：请预订[日期][时间段][会议室名称]用于[会议名称]
+        - 操作：查询[日期][时间段][会议室名称]的可用情况
+        - 操作：预订[日期][时间段][会议室名称]用于[会议名称]
         """
         ),
         ("human", "{input}")
     ])
+    # The chain now ends with the modified parse_and_print_json which returns a string
     standardization_chain = input_standardization_prompt | current_llm | parse_and_print_json
 
     # 创建 ReAct 代理 (使用修改后的 prompt)
@@ -599,9 +603,9 @@ def create_agent_and_chains():
 
     # 创建代理执行器
     agent_executor = AgentExecutor(
-        agent=agent, 
-        tools=tools, 
-        verbose=True, 
+        agent=agent,
+        tools=tools,
+        verbose=True,
         handle_parsing_errors=True,
     )
 
@@ -613,10 +617,12 @@ def create_agent_and_chains():
         history_messages_key="chat_history" # 这个 key 仍然告诉包装器去管理历史
     )
 
-    # 保持原有的主处理链结构
+    # *** 修正链条定义，确保只定义一次，并正确连接 ***
+    # 移除重复/冲突的定义
     chain_with_summarization = (
         RunnablePassthrough.assign(messages_summarized=summarize_messages)
         | RunnablePassthrough.assign(
+            # Assign the output string from standardization_chain to the 'input' key
             input=lambda x: standardization_chain.invoke({
                 "input": x["input"],
                 "current_date": x["current_date"],
@@ -626,17 +632,6 @@ def create_agent_and_chains():
         | chain_with_message_history
     )
 
-    chain_with_summarization = (
-        RunnablePassthrough.assign(messages_summarized=summarize_messages)
-        | RunnablePassthrough.assign(
-            input=lambda x: standardization_chain.invoke({
-                "input": x["input"],
-                "current_date": x["current_date"],
-                "chat_history": demo_ephemeral_chat_history.messages
-            })
-        )
-    )
-    
     return chain_with_summarization
 
 # 初始创建代理和链
@@ -655,56 +650,101 @@ class LLMReinitChain:
         chain = self.create_chain_func()
         return chain
     
+    def _update_last_ai_message_content(self, result):
+        """辅助函数：用 result['output'] 更新历史记录中最后一条 AI 消息"""
+        try:
+            if isinstance(result, dict) and 'output' in result and demo_ephemeral_chat_history.messages:
+                last_message = demo_ephemeral_chat_history.messages[-1]
+                if isinstance(last_message, AIMessage):
+                    print(f"准备更新历史记录中的最后一条 AI 消息。原始内容长度: {len(last_message.content)}, 新内容 ('output'): {result['output'][:100]}...")
+                    last_message.content = result['output'] # 直接替换内容
+                    print("最后一条 AI 消息内容已更新。")
+                else:
+                     print("历史记录最后一条不是 AI 消息，不更新。")
+            elif not demo_ephemeral_chat_history.messages:
+                 print("历史记录为空，不更新。")
+            else:
+                print(f"结果格式不符合预期或缺少 'output' 键，不更新历史记录。结果类型: {type(result)}")
+
+        except Exception as e:
+            print(f"更新最后一条 AI 消息时出错: {e}")
+
     def invoke(self, input_data, **kwargs):
         """每次调用强制重新创建链"""
-        # 每次调用都重新创建链和LLM
         chain = self.get_chain()
         try:
             result = chain.invoke(input_data, **kwargs)
-            save_chat_history()
+            # --- 新增：更新历史记录 ---
+            self._update_last_ai_message_content(result)
+            # ----------------------
+            save_chat_history() # 现在保存的是更新后的历史
             return result
         except Exception as e:
             print(f"调用出错: {str(e)}")
-            save_chat_history()
+            save_chat_history() # 出错时也尝试保存（可能未更新）
             raise
     
     async def ainvoke(self, input_data, **kwargs):
         """异步调用强制重新创建链"""
-        # 每次调用都重新创建链和LLM
         chain = self.get_chain()
         try:
             result = await chain.ainvoke(input_data, **kwargs)
-            save_chat_history()
+            # --- 新增：更新历史记录 ---
+            self._update_last_ai_message_content(result)
+            # ----------------------
+            save_chat_history() # 现在保存的是更新后的历史
             return result
         except Exception as e:
             print(f"异步调用出错: {str(e)}")
-            save_chat_history()
+            save_chat_history() # 出错时也尝试保存（可能未更新）
             raise
     
     def stream(self, input_data, **kwargs):
         """流式调用强制重新创建链"""
-        # 每次调用都重新创建链和LLM
         chain = self.get_chain()
+        final_result_for_history = None # 用于存储最终结果
         try:
+            # 流式输出块
             for chunk in chain.stream(input_data, **kwargs):
-                yield chunk
-            save_chat_history()
+                # 检查块是否是最终结果字典
+                if isinstance(chunk, dict) and 'output' in chunk:
+                    final_result_for_history = chunk
+                yield chunk # 将块传递给调用者
+
+            # --- 流结束后：更新历史记录 ---
+            if final_result_for_history:
+                 self._update_last_ai_message_content(final_result_for_history)
+            else:
+                 print("流式调用结束，但未捕获到包含'output'的最终结果字典，无法更新历史记录。")
+            # -------------------------
+            save_chat_history() # 保存历史
         except Exception as e:
             print(f"流式调用出错: {str(e)}")
-            save_chat_history()
+            save_chat_history() # 出错时也尝试保存
             raise
     
     async def astream(self, input_data, **kwargs):
         """异步流式调用强制重新创建链"""
-        # 每次调用都重新创建链和LLM
         chain = self.get_chain()
+        final_result_for_history = None # 用于存储最终结果
         try:
+            # 异步流式输出块
             async for chunk in chain.astream(input_data, **kwargs):
-                yield chunk
-            save_chat_history()
+                 # 检查块是否是最终结果字典
+                if isinstance(chunk, dict) and 'output' in chunk:
+                    final_result_for_history = chunk
+                yield chunk # 将块传递给调用者
+
+             # --- 流结束后：更新历史记录 ---
+            if final_result_for_history:
+                 self._update_last_ai_message_content(final_result_for_history)
+            else:
+                 print("异步流式调用结束，但未捕获到包含'output'的最终结果字典，无法更新历史记录。")
+            # -------------------------
+            save_chat_history() # 保存历史
         except Exception as e:
             print(f"异步流式调用出错: {str(e)}")
-            save_chat_history()
+            save_chat_history() # 出错时也尝试保存
             raise
 
 # 使用新的包装类替换原来的链
@@ -714,7 +754,7 @@ chain_with_summarization = LLMReinitChain(create_agent_and_chains)
 if __name__ == "__main__":
     test_inputs = [
         # "后天定跟上次一样的会议室"
-        "周六定乐山厅14点到16点"
+        "定下周六宜山厅"
     ]
     
     for test_input in test_inputs:
