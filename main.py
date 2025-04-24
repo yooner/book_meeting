@@ -47,8 +47,8 @@ class LLMManager:
         try:
             self.main_llm = ChatOpenAI(
                 openai_api_key="asd",
-                openai_api_base="http://10.17.8.207:11434/v1",
-                model_name="deepseek-r1:70b",
+                openai_api_base="http://10.127.21.3:1025/v1",
+                model_name="DeepSeek-R1-bf16-w8a8",
                 temperature=0
             )
             self.last_init_time = time.time()
@@ -65,11 +65,17 @@ class LLMManager:
     def create_summary_llm(self):
         """创建摘要LLM实例"""
         try:
+            # self.summary_llm = ChatOpenAI(
+            #     openai_api_key="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",
+            #     openai_api_base="https://openrouter.ai/api/v1",
+            #     model_name="deepseek/deepseek-chat-v3-0324:free",
+            #     temperature=0,
+            # )
             self.summary_llm = ChatOpenAI(
-                openai_api_key="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",
-                openai_api_base="https://openrouter.ai/api/v1",
-                model_name="deepseek/deepseek-chat-v3-0324:free",
-                temperature=0,
+                openai_api_key="asd",
+                openai_api_base="http://10.127.21.3:1025/v1",
+                model_name="DeepSeek-R1-bf16-w8a8",
+                temperature=0
             )
             print("摘要LLM初始化成功")
             return self.summary_llm
@@ -106,12 +112,35 @@ chat_summary = llm_manager.get_summary_llm()
 demo_ephemeral_chat_history = ChatMessageHistory()
 
 def message_to_text(message):
-    """(还原后) 将消息对象转换为文本格式"""
+    """(优化后) 将消息对象转换为文本格式，过滤掉解析过程"""
     if isinstance(message, HumanMessage):
         return f"USER: {message.content}"
     elif isinstance(message, AIMessage):
-        # 直接使用 content，因为我们会在保存前确保它是干净的
-        return f"ASSISTANT: {message.content}"
+        content = message.content
+        
+        # 过滤掉解析信息
+        if "解析：" in content:
+            # 尝试找到解析部分之后的实际响应
+            parts = content.split("A:", 1)
+            if len(parts) > 1:
+                content = parts[1].strip()
+            else:
+                # 如果没有明确的分隔符，则尝试移除所有解析信息段落
+                lines = content.split('\n')
+                filtered_lines = []
+                skip_section = False
+                
+                for line in lines:
+                    if line.strip().startswith("解析：") or "解析" in line.strip():
+                        skip_section = True
+                    elif skip_section and not line.strip():  # 空行结束跳过
+                        skip_section = False
+                    elif not skip_section:
+                        filtered_lines.append(line)
+                
+                content = '\n'.join(filtered_lines).strip()
+        
+        return f"ASSISTANT: {content}"
     elif isinstance(message, SystemMessage):
         return f"SYSTEM: {message.content}"
     else:
@@ -367,7 +396,8 @@ def book_meeting_room(params: str) -> str:
         # "description": "",  # 可以根据需要添加描述
         # "total_members": 1  # 可以设置参会人数
     }
-    print(api_params)
+    print(f"预订请求参数: {api_params}")
+    
     try:
         # 使用同步方式发送HTTP请求到agent.py的API接口
         with httpx.Client() as client:
@@ -393,19 +423,82 @@ def book_meeting_room(params: str) -> str:
                     "时间": f"{日期} {开始时间}-{结束时间}"
                 }, ensure_ascii=False)
             else:
-                return json.dumps({
+                # 预订失败，直接调用query_meeting_room查询同一时间段可用会议室
+                print(f"预订失败，原因: {result.get('message')}。正在查询同一时间段的可用会议室...")
+                
+                # 构造查询参数
+                query_params = {
+                    "日期": 日期,
+                    "开始时间": 开始时间,
+                    "结束时间": 结束时间
+                }
+                
+                # 调用query_meeting_room函数获取所有会议室状态
+                query_result_str = query_meeting_room(json.dumps(query_params))
+                query_result = json.loads(query_result_str)
+                
+                # 提取可用会议室
+                available_rooms = []
+                if "结果" in query_result:
+                    for room_status in query_result["结果"]:
+                        if room_status.get("状态") == "空闲":
+                            available_rooms.append(room_status.get("会议室"))
+                
+                # 构造包含预订失败信息和可用会议室的响应
+                response_data = {
                     "状态": "预订失败",
                     "会议室": 会议室,
                     "时间": f"{日期} {开始时间}-{结束时间}",
-                    "原因": result.get("message") or "未知错误"
-                }, ensure_ascii=False)
+                    "原因": result.get("message") or "未知错误",
+                    "可用会议室": available_rooms,
+                    "详细查询结果": query_result
+                }
+                
+                return json.dumps(response_data, ensure_ascii=False)
     except Exception as e:
-        return json.dumps({
-            "状态": "预订失败",
-            "会议室": 会议室,
-            "时间": f"{日期} {开始时间}-{结束时间}",
-            "原因": f"请求错误: {str(e)}"
-        }, ensure_ascii=False)
+        # 发生异常时也尝试查询可用会议室
+        print(f"预订请求出错: {str(e)}。正在查询同一时间段的可用会议室...")
+        
+        try:
+            # 构造查询参数
+            query_params = {
+                "日期": 日期,
+                "开始时间": 开始时间,
+                "结束时间": 结束时间
+            }
+            
+            # 调用query_meeting_room函数获取所有会议室状态
+            query_result_str = query_meeting_room(json.dumps(query_params))
+            query_result = json.loads(query_result_str)
+            
+            # 提取可用会议室
+            available_rooms = []
+            if "结果" in query_result:
+                for room_status in query_result["结果"]:
+                    if room_status.get("状态") == "空闲":
+                        available_rooms.append(room_status.get("会议室"))
+            
+            response_data = {
+                "状态": "预订失败",
+                "会议室": 会议室,
+                "时间": f"{日期} {开始时间}-{结束时间}",
+                "原因": f"请求错误: {str(e)}",
+                "可用会议室": available_rooms,
+                "详细查询结果": query_result
+            }
+        except Exception as query_error:
+            # 如果查询也失败了，返回简单的错误信息
+            print(f"查询可用会议室也失败了: {str(query_error)}")
+            response_data = {
+                "状态": "预订失败",
+                "会议室": 会议室,
+                "时间": f"{日期} {开始时间}-{结束时间}",
+                "原因": f"请求错误: {str(e)}",
+                "可用会议室": ["查询可用会议室失败"],
+                "查询错误": str(query_error)
+            }
+        
+        return json.dumps(response_data, ensure_ascii=False)
 
 @tool
 def query_meeting_room(params: str) -> str:
@@ -450,39 +543,10 @@ def query_meeting_room(params: str) -> str:
             # 如果指定了特定会议室，只返回该会议室的信息
             if 会议室:
                 if 会议室 in rooms_data:
-                    room_info = rooms_data[会议室]
+                    result = rooms_data[会议室]
                     # 检查给定时间段内是否有忙碌时间
-                    is_busy = len(room_info.get("busy_time", [])) > 0
-                    status = "已预订" if is_busy else "空闲"
-                    room_status_list.append({"会议室": 会议室, "状态": status})
-                else:
-                    # 如果找不到指定会议室，可能会议室名称不完全匹配
-                    # 尝试部分匹配
-                    found = False
-                    for room_name in rooms_data:
-                        if 会议室 in room_name:
-                            room_info = rooms_data[room_name]
-                            is_busy = len(room_info.get("busy_time", [])) > 0
-                            status = "已预订" if is_busy else "空闲"
-                            room_status_list.append({"会议室": room_name, "状态": status})
-                            found = True
-                    
-                    if not found:
-                        room_status_list.append({"会议室": 会议室, "状态": "未找到"})
             else:
-                # 返回所有会议室的情况
-                for room_name, room_info in rooms_data.items():
-                    is_busy = len(room_info.get("busy_time", [])) > 0
-                    status = "已预订" if is_busy else "空闲"
-                    room_status_list.append({"会议室": room_name, "状态": status})
-            
-            # 构造结果
-            result = {
-                "日期": 日期,
-                "时间段": 时间段,
-                "会议室列表": [会议室] if 会议室 else list(rooms_data.keys()),
-                "结果": room_status_list
-            }
+                result = rooms_data
             
             return json.dumps(result, ensure_ascii=False)
             
@@ -545,6 +609,50 @@ def parse_and_print_json(message):
     # 返回提取到的查询语句字符串
     return extracted_query
 
+def try_extract_date_time(x):
+    """从用户输入中提取日期和时间信息"""
+    try:
+        # 创建并运行推断链
+        date_inference_prompt = ChatPromptTemplate.from_messages([
+            ("system", """从以下用户输入中提取日期信息，转换为实际日期。
+    
+当前日期: {current_date}
+用户输入: {user_input}
+
+以JSON格式返回，包含 "日期"。""")
+        ])
+        
+        # 获取当前LLM实例
+        inference_llm = llm_manager.get_main_llm()
+        
+        # 创建并运行推断链
+        inference_chain = date_inference_prompt | inference_llm
+        
+        # 调用推断链
+        result = inference_chain.invoke({
+            "current_date": x["current_date"],
+            "user_input": x["input"]
+        })
+        
+        # 尝试解析返回的JSON
+        import json
+        import re
+        
+        # 尝试提取JSON部分
+        json_match = re.search(r'({.*?})', result.content, re.DOTALL)
+        if json_match:
+            json_str = json_match.group(1)
+            inference_result = json.loads(json_str)
+            return {
+                "日期": inference_result.get("日期", x["current_date"]),
+            }
+        else:
+            print(f"无法从LLM响应中提取JSON: {result.content[:100]}...")
+            
+    except Exception as e:
+        print(f"日期推断失败: {str(e)}")
+    
+
 # 创建代理和链的函数，支持重新初始化
 def create_agent_and_chains():
     """创建或重新创建代理和执行链"""
@@ -573,24 +681,34 @@ def create_agent_and_chains():
     Thought: {agent_scratchpad}
     ''')
 
-    # 创建用户输入规范化预处理链 (保持定义，暂不整合)
+
+    # 创建用户输入规范化预处理链 
     input_standardization_prompt = ChatPromptTemplate.from_messages([
-        ("system", """你是一个会议室预订系统的预处理助手。你的任务是将用户的非正式输入转换为更结构化的查询格式。
-        请根据输入提取以下信息：
-        1. 意图：是查询会议室还是预订会议室
-        2. 会议室名称（如果有提及）
-        3. 日期：明确的日期或相对日期（今天、明天、后天、下周等）
-        4. 时间段：开始和结束时间
+        ("system", """你是一个会议室预订系统的智能预处理助手。你的任务是将用户的非正式输入转换为结构化的预订指令。
+
+        请根据输入和会议室状态信息提取以下内容：
+        1. 日期：从用户提及的日期或从历史对话推断
+        2. 时间段：开始和结束时间
+        3. 会议室名称：根据用户提及或会议室可用状态选择合适的会议室
+        4. 会议名称：从用户输入或历史推断
 
         当前日期: {current_date}
-        历史对话内容: # <- 注意：这个提取链的 prompt 仍然可以使用 history
+        历史对话内容: 
         {chat_history}
+        对应日期的会议室使用情况:
+        {room_status}
 
-        请将用户输入规范化为清晰的查询语句。不要添加未提及的信息，但可以基于历史对话补充缺失的关键信息。
-        记住缺少的内容可以从历史对话中总结
-        输出格式示例：
-        - 操作：查询[日期][时间段][会议室名称]的可用情况
+        重要提示：
+        - 始终选择一个当前可用（状态为"空闲"）的会议室。如果用户指定的会议室已被占用，请从可用会议室中选择一个替代。
+        - 历史记录反映用户的偏好（如常用会议室、时间段等），可用于补充用户未明确指定的信息。
+        - 当用户使用模糊表达（如"明天下午"）时，使用合理的默认值（如"14:00-16:00"）。
+        - 如果用户没有提供会议名称，从历史中推断。如果历史没有则默认是沟通
+        - 如果指定时间段内所有会议室都已被占用，直接返回没有满足条件的会议室
+
+        你必须输出以下格式：
         - 操作：预订[日期][时间段][会议室名称]用于[会议名称]
+        
+        注意：不要生成查询操作，直接根据提供的会议室使用情况生成预订指令。你的回答应该只包含上述标准格式的指令尤其是操作:，不要添加额外的解释或注释。
         """
         ),
         ("human", "{input}")
@@ -617,19 +735,41 @@ def create_agent_and_chains():
         history_messages_key="chat_history" # 这个 key 仍然告诉包装器去管理历史
     )
 
-    # *** 修正链条定义，确保只定义一次，并正确连接 ***
-    # 移除重复/冲突的定义
+    # *** 修正链条定义，确保先从用户输入中推断日期和时间 ***
     chain_with_summarization = (
         RunnablePassthrough.assign(messages_summarized=summarize_messages)
         | RunnablePassthrough.assign(
-            # Assign the output string from standardization_chain to the 'input' key
-            input=lambda x: standardization_chain.invoke({
+            # 预先推断用户输入中的日期和时间
+            date_inference=lambda x: {
+                "user_input": x["input"],
+                "current_date": x["current_date"]
+            }
+        )
+        | RunnablePassthrough.assign(
+            # 使用推断llm从用户输入中提取日期和时间信息
+            query_date_time=lambda x: (
+                try_extract_date_time(x)
+            )
+        )
+        | RunnablePassthrough.assign(
+            # 使用推断出的日期时间查询会议室使用情况
+            room_status=lambda x: query_meeting_room.invoke(json.dumps(x["query_date_time"]))
+        )
+        | RunnablePassthrough.assign(
+            # 将推断的日期时间和查询到的会议室状态传递给标准化处理链
+            standardized_input=lambda x: standardization_chain.invoke({
                 "input": x["input"],
                 "current_date": x["current_date"],
-                "chat_history": demo_ephemeral_chat_history.messages
+                "chat_history": demo_ephemeral_chat_history.messages,
+                "room_status": x["room_status"],  # 传递查询到的会议室状态
             })
         )
-        | chain_with_message_history
+        # | RunnablePassthrough.assign(
+        #     # 从标准化输入中提取查询部分，传递给实际处理链
+        #     input=lambda x: x["standardized_input"]["query"] if isinstance(x["standardized_input"], dict) else x["standardized_input"]
+        # )
+        # # 最后将标准化后的输入传递给实际的处理链
+        # | chain_with_message_history
     )
 
     return chain_with_summarization
@@ -754,7 +894,8 @@ chain_with_summarization = LLMReinitChain(create_agent_and_chains)
 if __name__ == "__main__":
     test_inputs = [
         # "后天定跟上次一样的会议室"
-        "定下周六宜山厅"
+        "后天定一个会议室"
+        # "查询明天宜山厅使用情况"
     ]
     
     for test_input in test_inputs:
@@ -766,7 +907,7 @@ if __name__ == "__main__":
             for chunk in chain_with_summarization.stream(
                 {
                     "input": test_input,
-                    "current_date": current_date
+                    "current_date": current_date,
                 },
                 config={"configurable": {"session_id": "1"}}
             ):

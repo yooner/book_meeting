@@ -333,17 +333,12 @@ async def book_room(
         }
         # print(data)
         async with httpx.AsyncClient() as client:
-            print('===============1')
             response = await client.post(
                 BOOKING_API_URL,
                 headers=API_HEADERS,
                 data=data
             )
-            print('===============')
-            print(response)
-            print('===============')
             response.raise_for_status()
-            
             
             result = response.json()
             if result.get("status") and result.get("meetingid"):
