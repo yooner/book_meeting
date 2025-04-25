@@ -564,7 +564,7 @@ def query_meeting_room(params: str) -> str:
 
 
 # 定义工具列表
-tools = [book_meeting_room, query_meeting_room]
+tools = [book_meeting_room]
 
 # 定义一个解析和打印函数
 def parse_and_print_json(message):
@@ -764,12 +764,12 @@ def create_agent_and_chains():
                 "room_status": x["room_status"],  # 传递查询到的会议室状态
             })
         )
-        # | RunnablePassthrough.assign(
-        #     # 从标准化输入中提取查询部分，传递给实际处理链
-        #     input=lambda x: x["standardized_input"]["query"] if isinstance(x["standardized_input"], dict) else x["standardized_input"]
-        # )
-        # # 最后将标准化后的输入传递给实际的处理链
-        # | chain_with_message_history
+        | RunnablePassthrough.assign(
+            # 从标准化输入中提取查询部分，传递给实际处理链
+            input=lambda x: x["standardized_input"]
+        )
+        # 最后将标准化后的输入传递给实际的处理链
+        | chain_with_message_history
     )
 
     return chain_with_summarization
@@ -894,7 +894,7 @@ chain_with_summarization = LLMReinitChain(create_agent_and_chains)
 if __name__ == "__main__":
     test_inputs = [
         # "后天定跟上次一样的会议室"
-        "后天定一个会议室"
+        "明天上午定一个6楼的会议室用于沟通"
         # "查询明天宜山厅使用情况"
     ]
     

@@ -1,6 +1,6 @@
 import streamlit as st
 import json
-from datetime import date
+from datetime import date, datetime, timedelta
 import pandas as pd
 import asyncio
 import re
@@ -54,6 +54,25 @@ st.set_page_config(
     page_icon="🏢",
     layout="wide"
 )
+
+# 定义办公地点选项
+OFFICE_LOCATIONS = [
+    "上海8号楼",
+    "上海17号楼",
+    "无锡",
+    "武汉",
+    "电子"
+]
+
+# 定义默认的会议时长选项（小时）
+MEETING_DURATIONS = [
+    "1小时",
+    "1.5小时",
+    "2小时",
+    "3小时",
+    "4小时",
+    "全天"
+]
 
 # 自定义CSS
 st.markdown("""
@@ -215,8 +234,107 @@ for message in st.session_state.messages:
                 print(f"解析响应出错: {str(e)}")
                 st.markdown(content)
 
+# 侧边栏：设置
+with st.sidebar:
+    st.header("会议室预订")
+    
+    # 1. 办公地点选择
+    selected_location = st.selectbox(
+        "办公地点",
+        options=OFFICE_LOCATIONS,
+        index=0,  # 默认选择第一个选项
+        key="office_location"
+    )
+    
+    # 2. 会议时间选择
+    col1, col2 = st.columns(2)
+    with col1:
+        # 日期选择，默认为当前日期
+        meeting_date = st.date_input(
+            "会议日期",
+            value=date.fromisoformat(st.session_state.current_date),
+            key="meeting_date"
+        )
+    with col2:
+        # 会议时长选择
+        meeting_duration = st.selectbox(
+            "会议时长",
+            options=MEETING_DURATIONS,
+            index=0,  # 默认选择1小时
+            key="meeting_duration"
+        )
+    
+    # 开始时间选择（24小时制）
+    start_time = st.time_input(
+        "开始时间",
+        value=datetime.strptime("09:00", "%H:%M").time(),  # 默认上午9点
+        key="start_time"
+    )
+    
+    # 3. 会议名称输入
+    meeting_name = st.text_input(
+        "会议名称",
+        value="沟通会议",  # 默认会议名称
+        key="meeting_name"
+    )
+    
+    # 添加一个预订按钮
+    if st.button("快速预订", type="primary"):
+        # 构造预订请求
+        end_time = None
+        if meeting_duration == "1小时":
+            end_time = (datetime.combine(date.today(), start_time) + timedelta(hours=1)).time()
+        elif meeting_duration == "1.5小时":
+            end_time = (datetime.combine(date.today(), start_time) + timedelta(minutes=90)).time()
+        elif meeting_duration == "2小时":
+            end_time = (datetime.combine(date.today(), start_time) + timedelta(hours=2)).time()
+        elif meeting_duration == "3小时":
+            end_time = (datetime.combine(date.today(), start_time) + timedelta(hours=3)).time()
+        elif meeting_duration == "4小时":
+            end_time = (datetime.combine(date.today(), start_time) + timedelta(hours=4)).time()
+        elif meeting_duration == "全天":
+            end_time = datetime.strptime("20:00", "%H:%M").time()
+        
+        # 构造查询字符串
+        query = f"在{selected_location}预订{meeting_date.strftime('%Y-%m-%d')} {start_time.strftime('%H:%M')}到{end_time.strftime('%H:%M')}的会议室用于{meeting_name}"
+        # 将查询添加到输入框
+        st.session_state.user_input = query
+    
+    st.divider()  # 添加分隔线
+    
+    # 测试按钮和其他设置
+    st.header("其他设置")
+    if st.button("清除聊天历史"):
+        st.session_state.messages = []
+        st.rerun()
+    
+    # 更新当前日期（用于模型上下文）
+    if meeting_date:
+        st.session_state.current_date = meeting_date.isoformat()
+    
+    # 使用说明
+    st.header("使用说明")
+    st.markdown("""
+    ### 预订会议室
+    1. 选择办公地点和会议时间
+    2. 输入会议名称
+    3. 点击"快速预订"或直接输入需求
+    
+    ### 查询会议室
+    例如: "查询贡湖厅下周一的使用情况"
+    
+    ### 提示
+    - 可以指定具体日期和时间
+    - 可以询问特定会议室的可用性
+    - 会议室名称可以简写，如"乐山厅"
+    """)
+
 # 用户输入
-user_input = st.chat_input("输入您的问题，例如：预订乐山厅明天上午9点到11点")
+if "user_input" in st.session_state:
+    user_input = st.session_state.user_input
+    del st.session_state.user_input  # 清除已使用的输入
+else:
+    user_input = st.chat_input("输入您的问题，例如：预订乐山厅明天上午9点到11点")
 
 # 处理用户输入
 if user_input:
@@ -354,32 +472,3 @@ if user_input:
                 "content": error_message
             })
             print(error_message)
-
-# 侧边栏：设置
-with st.sidebar:
-    st.header("设置")
-    
-    # 测试按钮
-    if st.button("清除聊天历史"):
-        st.session_state.messages = []
-        st.rerun()
-    
-    # 日期设置
-    custom_date = st.date_input("选择日期（用于模型上下文）", value=date.fromisoformat(st.session_state.current_date))
-    if custom_date:
-        st.session_state.current_date = custom_date.isoformat()
-    
-    # 使用说明
-    st.header("使用说明")
-    st.markdown("""
-    ### 预订会议室
-    例如: "帮我预订乐山厅明天上午9点到11点"
-    
-    ### 查询会议室
-    例如: "查询贡湖厅下周一的使用情况"
-    
-    ### 提示
-    - 可以指定具体日期和时间
-    - 可以询问特定会议室的可用性
-    - 会议室名称可以简写，如"乐山厅"
-    """)
