@@ -60,7 +60,7 @@ app.add_middleware(
 
 # API 请求头和URL常量
 API_HEADERS = {
-    'token': 'fd34a41a-776b-4a83-bc2c-d484a641585a',
+    'token': 'd765befd-39b9-4aab-b56b-d152929e9faa',
     'appid': 'FF5CF901-BF89-23EC-E594-CF85C7CE06B3',
     'userid': 'i8CMuQudA7cy54ylqDkrcH7aDfyiGSELhTPi8PPCutLE9nc1P2n3+NPTXT+hMImBftmGjcqQDiR3oAoJVrV/ph5YVMgcFyZl5ay7arVtPHm+LRyYN0HYJcUz106uf98aGUDYt0pR0Vu/3yyYSKfeV9sT4ia9KgPO55FQDKPOgzdj9vPKBnOjipUhY3G953nbkBHaJRSXA9sL74r6ZBKxf5kw9k9doTz5rtTLjowDvx0cKjfsFTQP66YKujFikT0Nm7jGI7fvHp3kg5LhOgw9cTjXAoM2ChHdqFB1lN7SMJ/PIjAoI6xD3WcZsaH48/tNDNbLaZEnq3ufswFBTdBJ1g==',
     'skipsession': '0',
@@ -156,8 +156,7 @@ def parse_room_availability_simplified(data: Dict[str, Any], query_date: str, st
                 
             room_name = room_mapping[room_id]
             room_result = {
-                "available_time": [],
-                "busy_time": []
+                "time_slots": []
             }
             
             # 获取会议室预订时间表
@@ -177,34 +176,51 @@ def parse_room_availability_simplified(data: Dict[str, Any], query_date: str, st
             # 合并连续的时间段
             current_status = None
             current_start = None
+            merged_slots = []
             
+            def add_time_slot(start_time, end_time, status):
+                # 检查是否可以与前一个时间段合并
+                if merged_slots and merged_slots[-1]["status"] == status:
+                    # 如果前一个时间段的结束时间就是当前时间段的开始时间，则合并
+                    if merged_slots[-1]["end_time"] == f"{start_time}:00":
+                        merged_slots[-1]["end_time"] = f"{end_time}:00"
+                        return
+                # 如果不能合并，添加新的时间段
+                merged_slots.append({
+                    "start_time": f"{start_time}:00",
+                    "end_time": f"{end_time}:00",
+                    "status": status
+                })
+            
+            # 处理所有时间点
             for i, time_point in enumerate(time_points):
                 status = room_status.get(time_point, True)
                 
-                # 如果状态改变或者是最后一个时间点
-                if current_status is None or current_status != status or i == len(time_points) - 1:
-                    # 保存上一个时间段（如果存在）
-                    if current_status is not None and current_start is not None:
-                        # 设置结束时间点
-                        end_time_slot = time_point
-                        if i == len(time_points) - 1 and current_status == status:
-                            next_time = (datetime.strptime(time_point, "%H:%M") + timedelta(minutes=30)).strftime("%H:%M")
-                            end_time_slot = next_time
-                        
-                        time_range = {
-                            "start_time": f"{current_start}:00",
-                            "end_time": f"{end_time_slot}:00"
-                        }
-                        
-                        if current_status:
-                            room_result["available_time"].append(time_range)
-                        else:
-                            room_result["busy_time"].append(time_range)
-                    
-                    # 开始新的时间段
+                # 如果是第一个时间点或状态发生改变
+                if current_status is None:
                     current_status = status
                     current_start = time_point
+                elif current_status != status:
+                    # 添加前一个时间段
+                    add_time_slot(
+                        current_start,
+                        time_point,
+                        "空闲" if current_status else "占用"
+                    )
+                    current_status = status
+                    current_start = time_point
+                
+                # 如果是最后一个时间点
+                if i == len(time_points) - 1:
+                    # 添加最后一个时间段
+                    next_time = (datetime.strptime(time_point, "%H:%M") + timedelta(minutes=30)).strftime("%H:%M")
+                    add_time_slot(
+                        current_start,
+                        next_time,
+                        "空闲" if current_status else "占用"
+                    )
             
+            room_result["time_slots"] = merged_slots
             result[room_name] = room_result
     
     # 添加rooms_list中的所有会议室，如果已存在则跳过
@@ -212,13 +228,13 @@ def parse_room_availability_simplified(data: Dict[str, Any], query_date: str, st
         if room_name not in result:
             # 对于未在API返回中的会议室，设置为全天可用
             result[room_name] = {
-                "available_time": [
+                "time_slots": [
                     {
                         "start_time": f"{start_time}:00",
-                        "end_time": f"{end_time}:00"
+                        "end_time": f"{end_time}:00",
+                        "status": "空闲"
                     }
-                ],
-                "busy_time": []
+                ]
             }
     
     return result
